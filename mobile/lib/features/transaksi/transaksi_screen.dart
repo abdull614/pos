@@ -6,6 +6,7 @@ import '../cart/cart_service.dart';
 
 import 'struk_model.dart';
 import 'struk_bottom_sheet.dart';
+import '../../widgets/cari_kode_produk_sheet.dart';
 
 class TransaksiScreen extends StatefulWidget {
   const TransaksiScreen({super.key});
@@ -93,6 +94,54 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
   void _pilihKategori(String kat) {
     setState(() => _selectedKategori = kat);
     _applyFilter();
+  }
+
+  Future<void> _bukaCariKodeProduk() async {
+    final kode = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const CariKodeProdukSheet(),
+    );
+    if (kode == null || kode.isEmpty || !mounted) return;
+    await _cariProdukByKode(kode);
+  }
+
+  Future<void> _cariProdukByKode(String kode) async {
+    try {
+      final response =
+          await ApiService.get('products/by-barcode/${Uri.encodeComponent(kode)}');
+      final produk = Map<String, dynamic>.from(response);
+      _tambah(produk);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${produk['name']} ditambahkan ke keranjang')),
+        );
+      }
+    } catch (_) {
+      // Fallback: coba cari lewat SKU/nama kalau barcode tidak ketemu persis
+      try {
+        final response =
+            await ApiService.get('products?search=${Uri.encodeComponent(kode)}');
+        final List data = response is List ? response : (response['data'] ?? []);
+        if (data.isNotEmpty) {
+          final produk = Map<String, dynamic>.from(data.first);
+          _tambah(produk);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('${produk['name']} ditambahkan ke keranjang')),
+            );
+          }
+          return;
+        }
+      } catch (_) {}
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Produk dengan kode "$kode" tidak ditemukan')),
+        );
+      }
+    }
   }
 
   int _getQty(dynamic id) {
@@ -321,15 +370,18 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF059669),
-                          borderRadius: BorderRadius.circular(12),
+                      GestureDetector(
+                        onTap: _bukaCariKodeProduk,
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF059669),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child:
+                              const Icon(Icons.qr_code_scanner, color: Colors.white),
                         ),
-                        child:
-                            const Icon(Icons.qr_code_scanner, color: Colors.white),
                       ),
                     ],
                   ),

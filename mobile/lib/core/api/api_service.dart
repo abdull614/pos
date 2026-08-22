@@ -59,12 +59,27 @@ class ApiService {
     final url = Uri.parse('${AppConfig.baseUrl}/$endpoint');
     final headers = await _buildHeaders(withToken: withToken);
 
-    final response = await http.post(
-      url,
-      headers: headers,
-      body: jsonEncode(data),
-    );
-    return _handleResponse(response);
+    int maxAttempts = 3;
+    int currentAttempt = 0;
+
+    while (currentAttempt < maxAttempts) {
+      currentAttempt++;
+      try {
+        final response = await http.post(
+          url,
+          headers: headers,
+          body: jsonEncode(data),
+        ).timeout(const Duration(seconds: 15)); // Tambahkan timeout 15 detik
+
+        return _handleResponse(response);
+      } catch (e) {
+        if (currentAttempt >= maxAttempts) {
+          throw Exception('Gagal terhubung ke server setelah beberapa percobaan. Periksa koneksi Anda.');
+        }
+        // Tunggu 1 detik sebelum mencoba ulang secara otomatis
+        await Future.delayed(const Duration(seconds: 1));
+      }
+    }
   }
 
   // PUT

@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mobile/screens/scanner/barcode_scanner_screen.dart';
 
 import '../../models/produk.dart';
 import '../../core/api/api_service.dart'; // tetap diimport jika nanti diperlukan
@@ -33,6 +34,7 @@ class _FormTambahProdukState extends State<FormTambahProduk> {
   final _hargaBeliCtrl = TextEditingController();
   final _stokCtrl = TextEditingController();
   final _deskripsiCtrl = TextEditingController();
+  final _barcodeCtrl = TextEditingController();
 
   String? _selectedSatuan;
   String? _selectedCategoryId;
@@ -75,6 +77,7 @@ class _FormTambahProdukState extends State<FormTambahProduk> {
     _hargaBeliCtrl.dispose();
     _stokCtrl.dispose();
     _deskripsiCtrl.dispose();
+    _barcodeCtrl.dispose();
     super.dispose();
   }
 
@@ -291,6 +294,17 @@ class _FormTambahProdukState extends State<FormTambahProduk> {
   /// IMPORTANT: sesuai permintaan Anda, saat klik Simpan di form ini
   /// produk **tidak langsung disimpan ke DB**. Kita buat objek Produk
   /// lokal dan kembalikan ke pemanggil.
+
+  Future<void> _bukaScanner() async {
+    final hasil = await Navigator.push<String?>(
+      context,
+      MaterialPageRoute(builder: (_) => BarcodeScannerScreen()),
+    );
+    if (hasil != null && hasil.isNotEmpty && mounted) {
+      setState(() => _barcodeCtrl.text = hasil); // <-- KOMEN: HASIL SCAN DISET KE FIELD BARCODE
+    }
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedCategoryId == null) {
@@ -319,6 +333,7 @@ class _FormTambahProdukState extends State<FormTambahProduk> {
         hargaJual: hargaJual,
         hargaBeli: hargaBeli,
         deskripsi: _deskripsiCtrl.text.trim(),
+        barcode: _barcodeCtrl.text.trim(),
       );
 
       // Kembalikan produkBaru ke pemanggil (tambah_produk_screen)
@@ -513,6 +528,42 @@ class _FormTambahProdukState extends State<FormTambahProduk> {
                       ),
                   ],
                 ),
+              ),
+              const SizedBox(height: 16),
+              _buildLabel('Barcode'), // <-- KOMEN: LABEL FIELD BARCODE
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _barcodeCtrl,
+                      keyboardType: TextInputType.text,
+                      decoration: InputDecoration(
+                        hintText: 'Masukkan barcode secara manual',
+                        prefixIcon: const Icon(Icons.numbers, color: Colors.grey),
+                        filled: true,
+                        fillColor: abukuMuda,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _bukaScanner, // <-- KOMEN: TOMBOL MEMBUKA SCANNER KAMERA
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF3F4F6),
+                        foregroundColor: Colors.grey.shade700,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+                      child: const Icon(Icons.camera_alt, size: 22),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
               Row(

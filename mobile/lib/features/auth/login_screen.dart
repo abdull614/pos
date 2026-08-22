@@ -30,31 +30,47 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMsg  = null;
     });
 
-    try {
-      final response = await ApiService.post(
-        'auth/login',
-        {
-          'email'   : _emailController.text.trim(),
-          'password': _passwordController.text,
-        },
-        withToken: false,
-      );
+    int maxRetries = 2; // Maksimal coba ulang 2 kali jika gagal
+    int attempt = 0;
+    bool success = false;
 
-      // Simpan token & role
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('auth_token', response['token']);
-      await prefs.setString('user_role',  response['user']['role'] ?? '');
-      await prefs.setString('user_name',  response['user']['name'] ?? '');
+    while (attempt < maxRetries && !success) {
+      attempt++;
+      try {
+        final response = await ApiService.post(
+          'auth/login',
+          {
+            'email'   : _emailController.text.trim(),
+            'password': _passwordController.text,
+          },
+          withToken: false,
+        );
 
-      if (mounted) {
-        // Navigasi ke MainScreen, hapus history
-        Navigator.pushReplacementNamed(context, '/home');
+        // Simpan token & role
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('auth_token', response['token']);
+        await prefs.setString('user_role',  response['user']['role'] ?? '');
+        await prefs.setString('user_name',  response['user']['name'] ?? '');
+
+        success = true; // Berhasil, keluar dari loop
+
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, '/home');
+        }
+      } catch (e) {
+        // Jika ini percobaan terakhir dan tetap gagal, tampilkan error
+        if (attempt >= maxRetries) {
+          setState(() {
+            _errorMsg = e.toString().replaceAll('Exception: ', '');
+          });
+        } else {
+          // Tunggu 1 detik sebelum mencoba ulang otomatis
+          await Future.delayed(const Duration(seconds: 1));
+        }
       }
-    } catch (e) {
-      setState(() {
-        _errorMsg = e.toString().replaceAll('Exception: ', '');
-      });
-    } finally {
+    }
+
+    if (mounted) {
       setState(() => _isLoading = false);
     }
   }

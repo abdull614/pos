@@ -93,11 +93,6 @@ Route::middleware(['auth:web', 'admin'])->prefix('admin')->group(function () {
     Route::get('/reports/receivables', [AdminReportController::class, 'receivables'])->name('reports.receivables');
     Route::get('reports/sales/excel', [AdminReportController::class, 'salesExcel'])->name('reports.sales.excel');
 
-    // UML diagram editor
-    Route::get('/uml', function () {
-        return view('admin.uml');
-    })->name('uml.index');
-
     // Profile / store settings
     Route::get('/profile', [AdminStoreSettingController::class, 'edit'])->name('profile');
     Route::put('/profile', [AdminStoreSettingController::class, 'update'])->name('profile.update');

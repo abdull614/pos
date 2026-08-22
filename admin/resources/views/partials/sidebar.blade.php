@@ -102,16 +102,6 @@
                 <span>Laporan</span>
             </a>
         </li>
-        <li>
-            <a href="{{ route('uml.index') }}"
-               class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all
-               {{ str_contains(request()->route()->getName(), 'uml')
-                   ? 'bg-emerald-50 text-emerald-700 font-semibold'
-                   : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50' }}">
-                <i class="bi bi-diagram-3 text-base"></i>
-                <span>UML Diagram</span>
-            </a>
-        </li>
     </ul>
 
     <!-- CTA Buka Kasir -->

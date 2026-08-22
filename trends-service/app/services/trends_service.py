@@ -7,7 +7,7 @@ from pytrends.request import TrendReq
 
 logger = logging.getLogger(__name__)
 
-TRENDING_RSS_URL = "https://trends.google.com/trending/rss"
+TRENDING_RSS_URL = "https://trends.google.com/trends/trending/rss"
 
 
 def _chunk(items, size):
@@ -76,7 +76,7 @@ class TrendsService:
         tanpa perlu keyword awal.
 
         Sumber data: RSS feed resmi dari Google Trends
-        (https://trends.google.com/trending/rss?geo=XX&hours=48), BUKAN
+        (https://trends.google.com/trends/trending/rss?geo=XX&hours=48), BUKAN
         pytrends.trending_searches() — fitur itu sudah tidak berfungsi
         karena Google mengubah endpoint lamanya (banyak dilaporkan sebagai
         404 error di pytrends). RSS feed ini adalah fitur resmi yang masih
@@ -114,3 +114,52 @@ class TrendsService:
                 if attempt == self.config.RETRY_ATTEMPTS:
                     return []
                 time.sleep(self.config.RETRY_DELAY_SEC * attempt)
+
+    def calculate_recommendation_score(self, products_data: list[dict]) -> list[dict]:
+        """
+        Menghitung skor total rekomendasi berdasarkan perbandingan data internal 
+        dan eksternal sesuai dengan laporan: S_total = (0.6 * S_int) + (0.4 * S_ext).
+        Menggunakan properti 'keyword' terpisah dari 'name' (nama produk/kategori) 
+        agar pencarian Google Trends lebih optimal dan tidak kaku.
+        """
+        if not products_data:
+            return []
+
+        # Ambil 'keyword' jika ada, jika tidak ada fallback ke 'name' produk
+        keywords = [p.get("keyword") or p["name"] for p in products_data]
+        external_scores = self.fetch_scores(keywords)
+
+        max_freq = max([p.get("purchase_frequency", 0) for p in products_data]) or 1.0
+        max_ext = 100.0 
+
+        results = []
+        for p in products_data:
+            name = p["name"]
+            kw = p.get("keyword") or name
+            
+            # Normalisasi data internal (S_int) berdasarkan frekuensi pembelian
+            raw_int = p.get("purchase_frequency", 0)
+            s_int = (raw_int / max_freq) * 100.0
+
+            # Normalisasi data eksternal / Google Trends (S_ext) berdasarkan keyword
+            raw_ext = external_scores.get(kw, 0.0)
+            s_ext = (raw_ext / max_ext) * 100.0
+
+            # Hitung skor total dengan bobot 60% internal & 40% eksternal
+            s_total = (0.6 * s_int) + (0.4 * s_ext)
+            s_total = round(s_total, 2)
+
+            # Threshold keputusan (>= 60 direkomendasikan)
+            is_recommended = s_total >= 60.0
+
+            results.append({
+                "product_id": p.get("product_id"),
+                "name": name,
+                "keyword": kw,
+                "s_int": round(s_int, 2),
+                "s_ext": round(s_ext, 2),
+                "s_total": s_total,
+                "recommended": is_recommended
+            })
+
+        return results
