@@ -1,7 +1,4 @@
 // lib/features/transaksi/struk_bottom_sheet.dart
-//
-// PERUBAHAN: _printReceipt() sekarang meneruskan logoUrl ke PrinterService
-// agar logo toko ikut tercetak di struk thermal.
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -43,8 +40,13 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
 
   Future<void> _printReceipt() async {
     if (_isPrinting) return;
+    setState(() => _isPrinting = true);
 
-    if (!PrinterService.isConnected) {
+    final terhubung = await PrinterService.ensureConnected();
+
+    if (!terhubung) {
+      if (mounted) setState(() => _isPrinting = false);
+
       final goToSettings = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -74,7 +76,6 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
       return;
     }
 
-    setState(() => _isPrinting = true);
     try {
       final success = await PrinterService.printReceipt(
         storeName:     _store?.storeName ?? 'Toko Sembako',
@@ -86,7 +87,7 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
         paidAmount:    widget.struk.bayar,
         address:       _store?.address,
         phone:         _store?.phone,
-        logoUrl:       _store?.logo,   // ← kirim URL logo ke printer service
+        logoUrl:       _store?.logo,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -105,8 +106,6 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
       if (mounted) setState(() => _isPrinting = false);
     }
   }
-
-  // ── UI helpers (tidak berubah) ──────────────────────────────────────────────
 
   String _getInitials(String name) {
     final words = name.trim().split(RegExp(r'\s+'));
@@ -168,8 +167,6 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
               ),
             ),
             const SizedBox(height: 20),
-
-            // ── HEADER TOKO ──
             if (!_storeLoaded)
               const SizedBox(
                 height: 80,
@@ -205,10 +202,7 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
                 Text(
                   _store!.address!,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF6B7280),
-                  ),
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
                   softWrap: true,
                   maxLines: 4,
                   overflow: TextOverflow.visible,
@@ -224,8 +218,6 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
               const Divider(color: Color(0xFFE5E7EB)),
               const SizedBox(height: 14),
             ],
-
-            // ── ICON SUKSES ──
             Container(
               width: 64, height: 64,
               decoration: BoxDecoration(
@@ -247,8 +239,6 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
             const SizedBox(height: 20),
             const Divider(color: Color(0xFFE5E7EB)),
             const SizedBox(height: 8),
-
-            // ── LIST ITEM ──
             ConstrainedBox(
               constraints: BoxConstraints(
                   maxHeight: MediaQuery.of(context).size.height * 0.28),
@@ -284,12 +274,9 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
                 },
               ),
             ),
-
             const SizedBox(height: 12),
             const Divider(color: Color(0xFFE5E7EB)),
             const SizedBox(height: 8),
-
-            // ── TOTAL & PEMBAYARAN ──
             Align(
               alignment: Alignment.centerLeft,
               child: Column(
@@ -314,10 +301,7 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
                 ],
               ),
             ),
-
             const SizedBox(height: 24),
-
-            // ── TOMBOL CETAK ──
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -338,10 +322,7 @@ class _StrukBottomSheetState extends State<StrukBottomSheet> {
                 ),
               ),
             ),
-
             const SizedBox(height: 12),
-
-            // ── TOMBOL TUTUP ──
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(

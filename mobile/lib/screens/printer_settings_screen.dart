@@ -1,9 +1,11 @@
-// lib/screens/printer_settings_screen.dart
 import 'package:flutter/material.dart';
-import 'package:bluetooth_print_plus/bluetooth_print_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import '../services/printer_service.dart';
 
+/// Halaman untuk memilih printer thermal Bluetooth.
+/// Catatan penting: printer harus sudah di-pairing lebih dulu lewat
+/// Settings > Bluetooth bawaan HP (masukkan PIN printer, biasanya 0000
+/// atau 1234) — baru printer akan muncul di daftar ini.
 class PrinterSettingsScreen extends StatefulWidget {
   const PrinterSettingsScreen({super.key});
 
@@ -12,144 +14,120 @@ class PrinterSettingsScreen extends StatefulWidget {
 }
 
 class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
-  List<BluetoothDevice> _printers = [];
-  bool _isScanning = false;
-  String? _connectedDeviceAddress;
-  String? _connectedDeviceName;
+  List<BluetoothInfo> _daftarPrinter = [];
+  bool _loading = true;
+  bool _connecting = false;
+  String? _macTerpilih;
 
   @override
   void initState() {
     super.initState();
-    _loadConnectedPrinter();
+    _muatDaftarPrinter();
   }
 
-  Future<void> _loadConnectedPrinter() async {
-    final prefs = await SharedPreferences.getInstance();
+  Future<void> _muatDaftarPrinter() async {
+    setState(() => _loading = true);
+
+    final izinOk = await PrinterService.instance.requestPermissions();
+    if (!izinOk) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Izin Bluetooth ditolak. Aktifkan lewat Pengaturan > Aplikasi untuk bisa memilih printer.')),
+        );
+      }
+      setState(() => _loading = false);
+      return;
+    }
+
+    final aktif = await PrinterService.instance.isBluetoothEnabled();
+    if (!aktif) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Aktifkan Bluetooth di HP terlebih dahulu')),
+        );
+      }
+      setState(() => _loading = false);
+      return;
+    }
+    final list = await PrinterService.instance.getPairedPrinters();
+    await PrinterService.instance.loadSavedPrinter();
     setState(() {
-      _connectedDeviceAddress = prefs.getString('printer_address');
-      _connectedDeviceName = prefs.getString('printer_name');
+      _daftarPrinter = list;
+      _macTerpilih = PrinterService.instance.savedMac;
+      _loading = false;
     });
   }
 
-  Future<void> _saveConnectedPrinter(String? address, String? name) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (address == null || address.isEmpty) {
-      await prefs.remove('printer_address');
-      await prefs.remove('printer_name');
-      setState(() {
-        _connectedDeviceAddress = null;
-        _connectedDeviceName = null;
-      });
-    } else {
-      await prefs.setString('printer_address', address);
-      await prefs.setString('printer_name', name ?? '');
-      setState(() {
-        _connectedDeviceAddress = address;
-        _connectedDeviceName = name;
-      });
-    }
-  }
-
-  Future<void> _scanAndConnect() async {
-    setState(() => _isScanning = true);
-    final devices = await PrinterService.scanBluetooth();
-    setState(() {
-      _printers = devices;
-      _isScanning = false;
-    });
-  }
-
-  Future<void> _connect(BluetoothDevice device) async {
-    final success = await PrinterService.connect(device);
-    if (!mounted) return; // guard
-
-    if (success) {
-      await _saveConnectedPrinter(device.address, device.name);
-      if (!mounted) return; // guard lagi sebelum context
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Terhubung ke ${device.name ?? device.address}')),
-      );
-      Navigator.pop(context);
-    } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Gagal terhubung')),
-      );
-    }
-  }
-
-  Future<void> _disconnect() async {
-    await PrinterService.disconnect();
-    await _saveConnectedPrinter(null, null);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Printer diputus')),
+  Future<void> _pilihPrinter(BluetoothInfo printer) async {
+    setState(() => _connecting = true);
+    final ok = await PrinterService.instance.connect(
+      printer.macAdress,
+      name: printer.name,
     );
+    setState(() {
+      _connecting = false;
+      if (ok) _macTerpilih = printer.macAdress;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok
+              ? 'Terhubung ke ${printer.name}'
+              : 'Gagal terhubung ke ${printer.name}'),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Pengaturan Printer')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            if (_connectedDeviceAddress != null)
-              Card(
-                color: Colors.green.shade50,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.check_circle, color: Colors.green),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Printer terhubung: ${_connectedDeviceName ?? _connectedDeviceAddress}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: _disconnect,
-                        child: const Text('Putus'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: _isScanning ? null : _scanAndConnect,
-              icon: const Icon(Icons.bluetooth),
-              label: Text(_isScanning ? 'Memindai...' : 'Scan Printer'),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _printers.isEmpty
-                  ? const Center(child: Text('Tidak ada printer ditemukan'))
-                  : ListView.builder(
-                      itemCount: _printers.length,
-                      itemBuilder: (_, i) {
-                        final p = _printers[i];
-                        final isConnected = p.address == _connectedDeviceAddress;
-                        return ListTile(
-                          leading: const Icon(Icons.print),
-                          title: Text(p.name ?? 'Unknown'),
-                          subtitle: Text(p.address ?? ''),
-                          trailing: isConnected
-                              ? const Icon(Icons.check_circle, color: Colors.green)
-                              : ElevatedButton(
-                                  onPressed: () => _connect(p),
-                                  child: const Text('Hubungkan'),
-                                ),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
+      appBar: AppBar(
+        title: const Text('Pilih Printer Struk'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loading ? null : _muatDaftarPrinter,
+          ),
+        ],
       ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _daftarPrinter.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.print_disabled, size: 48, color: Colors.grey),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Belum ada printer yang di-pairing.\n'
+                          'Buka Pengaturan > Bluetooth di HP, pairing dulu dengan printer struk, lalu tekan refresh di sini.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: _daftarPrinter.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, i) {
+                    final p = _daftarPrinter[i];
+                    final terpilih = p.macAdress == _macTerpilih;
+                    return ListTile(
+                      leading: const Icon(Icons.print),
+                      title: Text(p.name.isEmpty ? '(Tanpa nama)' : p.name),
+                      subtitle: Text(p.macAdress),
+                      trailing: terpilih
+                          ? const Icon(Icons.check_circle, color: Colors.green)
+                          : (_connecting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : null),
+                      onTap: _connecting ? null : () => _pilihPrinter(p),
+                    );
+                  },
+                ),
     );
   }
 }

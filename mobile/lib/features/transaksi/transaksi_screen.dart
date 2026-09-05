@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile/widgets/tambah_utang_form.dart';
 import '../../core/api/api_service.dart';
 import '../../utils/format_helper.dart';
@@ -200,6 +201,39 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
         }
       }
     });
+  }
+
+  // ⚠️ FIX: memungkinkan qty diketik langsung lewat keyboard (bukan cuma
+  // lewat tombol -/+). Nilai otomatis dibatasi ke rentang [0, stok]; qty 0
+  // akan menghapus produk dari keranjang.
+  void _setQty(Map<String, dynamic> produk, int newQty) {
+    final id = produk['id'];
+    final stok = _getStok(produk);
+    final idx = CartService.cart.indexWhere((e) => e['id'] == id);
+
+    if (newQty <= 0) {
+      if (idx != -1) setState(() => CartService.cart.removeAt(idx));
+      return;
+    }
+
+    final melebihiStok = stok > 0 && newQty > stok;
+    final clamped = stok > 0 ? newQty.clamp(1, stok) : newQty;
+
+    setState(() {
+      if (idx != -1) {
+        CartService.cart[idx]['qty'] = clamped;
+      } else {
+        CartService.addToCart(produk);
+        final newIdx = CartService.cart.indexWhere((e) => e['id'] == id);
+        if (newIdx != -1) CartService.cart[newIdx]['qty'] = clamped;
+      }
+    });
+
+    if (melebihiStok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Qty melebihi stok, disesuaikan otomatis')),
+      );
+    }
   }
 
   Future<void> _checkout() async {
@@ -465,19 +499,25 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                                 isCheckingOut: isCheckingOut,
                                 onTambah: _tambah,
                                 onKurang: _kurang,
+                                onSetQty: (id, newQty, stok) {
+                                  final idx = CartService.cart
+                                      .indexWhere((e) => e['id'] == id);
+                                  if (idx == -1) return;
+                                  _setQty(
+                                    Map<String, dynamic>.from(
+                                        CartService.cart[idx]),
+                                    newQty,
+                                  );
+                                },
                               ),
                             ),
                           ],
                         )
                       : // Mobile: 2 kolom + bottom cart bar
-                      Stack(
+                      Column(
                           children: [
-                            _buildGrid(crossCount: 2),
-                            if (CartService.cart.isNotEmpty)
-                              Align(
-                                alignment: Alignment.bottomCenter,
-                                child: _buildCartBar(),
-                              ),
+                            Expanded(child: _buildGrid(crossCount: 2)),
+                            if (CartService.cart.isNotEmpty) _buildCartBar(),
                           ],
                         ),
             ),
@@ -505,44 +545,48 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
 
     final cardWidth = (availableWidth - spacing) / crossCount;
 
-    // Tinggi card tetap — cukup untuk semua konten tanpa overflow
-    // Portrait mobile: 220, landscape mobile: 195, tablet portrait: 260, tablet landscape: 220
+    // Tinggi card tetap — cukup untuk semua konten (termasuk stepper qty
+    // yang bisa diketik) tanpa overflow.
     final cardHeight = isTablet
-        ? (isPortrait ? 230.0 : 210.0)
-        : (isPortrait ? 210.0 : 195.0);
+        ? (isPortrait ? 246.0 : 226.0)
+        : (isPortrait ? 226.0 : 211.0);
 
     final childAspectRatio = cardWidth / cardHeight;
 
-    final bottomPadding = isTablet
-        ? 12.0
-        : (CartService.cart.isNotEmpty ? cartBarHeight + 16.0 : 12.0);
+    // Grid sekarang jadi sibling dari cart bar (bukan ditumpuk via Stack),
+    // jadi cukup padding standar — tidak perlu lagi menghitung tinggi
+    // cart bar secara manual.
+    const bottomPadding = 12.0;
 
-    return GridView.builder(
-      padding: EdgeInsets.fromLTRB(12, 12, 12, bottomPadding),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: crossCount,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: childAspectRatio,
-      ),
-      itemCount: _filteredList.length,
-      itemBuilder: (context, index) {
-        final produk = _filteredList[index];
-        final qty = _getQty(produk['id']);
-        final stok = _getStok(produk);
-        final harga = double.parse(produk['selling_price'].toString());
-        final kat = (produk['category']?['name'] ?? produk['kategori'] ?? '')
-            .toString()
-            .toUpperCase();
-        final menipis = stok > 0 && stok < 10;
+    // Kunci text scaling di area grid supaya pengaturan "ukuran font" HP
+    // pengguna tidak membuat konten kartu overflow dan terlihat saling
+    // tumpuk tindih.
+    return MediaQuery(
+      data: mq.copyWith(textScaler: const TextScaler.linear(1.0)),
+      child: GridView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, bottomPadding),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossCount,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: childAspectRatio,
+        ),
+        itemCount: _filteredList.length,
+        itemBuilder: (context, index) {
+          final produk = _filteredList[index];
+          final qty = _getQty(produk['id']);
+          final stok = _getStok(produk);
+          final harga = double.parse(produk['selling_price'].toString());
+          final kat = (produk['category']?['name'] ?? produk['kategori'] ?? '')
+              .toString()
+              .toUpperCase();
+          final menipis = stok > 0 && stok < 10;
 
-        // Catatan: produk dengan stok habis (stok <= 0) sudah disaring keluar
-        // di _applyFilter()/_loadProduk(), jadi tidak akan pernah sampai ke
-        // sini. GestureDetector di bawah tetap aman karena _tambah() masih
-        // punya guard stok sebagai lapisan pertahanan kedua.
-        return GestureDetector(
-          onTap: () => _tambah(produk),
-          child: _ProdukCard(
+          // Catatan: produk dengan stok habis (stok <= 0) sudah disaring keluar
+          // di _applyFilter()/_loadProduk(), jadi tidak akan pernah sampai ke
+          // sini. GestureDetector di bawah tetap aman karena _tambah() masih
+          // punya guard stok sebagai lapisan pertahanan kedua.
+          return _ProdukCard(
             nama: produk['name'] ?? '-',
             harga: harga,
             stok: stok,
@@ -552,9 +596,10 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
             qty: qty,
             onTambah: () => _tambah(produk),
             onKurang: () => _kurang(produk['id']),
-          ),
-        );
-      },
+            onSetQty: (val) => _setQty(produk, val),
+          );
+        },
+      ),
     );
   }
 
@@ -624,10 +669,14 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text(
-                    '$qtyItem',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: _QtyEditor(
+                    qty: qtyItem,
+                    maxQty: stokItem > 0 ? stokItem : null,
+                    width: 44,
+                    height: 30,
+                    fontSize: 14,
+                    onChanged: (val) => _setQty(lastItem, val),
                   ),
                 ),
                 // ⚠️ FIX: tombol tambah di cart bar juga dinonaktifkan bila
@@ -682,12 +731,14 @@ class _CartSidePanel extends StatefulWidget {
   final bool isCheckingOut;
   final void Function(Map<String, dynamic>) onTambah;
   final void Function(dynamic) onKurang;
+  final void Function(dynamic id, int newQty, int stok) onSetQty;
 
   const _CartSidePanel({
     required this.onCheckout,
     required this.isCheckingOut,
     required this.onTambah,
     required this.onKurang,
+    required this.onSetQty,
   });
 
   @override
@@ -732,51 +783,69 @@ class _CartSidePanelState extends State<_CartSidePanel> {
                       final subtotal = harga * qty;
                       final stok = _getStok(item);
                       final habisTambah = stok > 0 && qty >= stok;
+                      // ⚠️ FIX: layout item keranjang diubah jadi 2 baris —
+                      // baris 1 nama produk (agar tidak terpotong/turun
+                      // baris berkali-kali seperti sebelumnya), baris 2
+                      // stepper qty [-  angka  +] di kiri sejajar dengan
+                      // subtotal di kanan.
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(nama, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  const SizedBox(height: 4),
-                                  Text(formatRupiah(harga), style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
-                                ],
-                              ),
+                            Text(
+                              nama,
+                              style: const TextStyle(fontWeight: FontWeight.w600),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
+                            const SizedBox(height: 6),
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                GestureDetector(
-                                  onTap: () => widget.onKurang(item['id']),
-                                  child: Container(
-                                    width: 30, height: 30,
-                                    decoration: BoxDecoration(
-                                      color: qty == 1 ? const Color(0xFFFEE2E2) : const Color(0xFFF3F4F6),
-                                      borderRadius: BorderRadius.circular(8),
+                                Row(
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () => widget.onKurang(item['id']),
+                                      child: Container(
+                                        width: 30, height: 30,
+                                        decoration: BoxDecoration(
+                                          color: qty == 1 ? const Color(0xFFFEE2E2) : const Color(0xFFF3F4F6),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Icon(qty == 1 ? Icons.delete_outline : Icons.remove, size: 16, color: qty == 1 ? const Color(0xFFDC2626) : const Color(0xFF374151)),
+                                      ),
                                     ),
-                                    child: Icon(qty == 1 ? Icons.delete_outline : Icons.remove, size: 16, color: qty == 1 ? const Color(0xFFDC2626) : const Color(0xFF374151)),
-                                  ),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                                      child: _QtyEditor(
+                                        qty: qty,
+                                        maxQty: stok > 0 ? stok : null,
+                                        onChanged: (val) =>
+                                            widget.onSetQty(item['id'], val, stok),
+                                      ),
+                                    ),
+                                    // ⚠️ FIX: nonaktifkan tombol "+" saat qty sudah
+                                    // mencapai batas stok yang tersedia.
+                                    GestureDetector(
+                                      onTap: habisTambah ? null : () => widget.onTambah(item),
+                                      child: Container(
+                                        width: 30, height: 30,
+                                        decoration: BoxDecoration(
+                                          color: habisTambah ? const Color(0xFFF3F4F6) : const Color(0xFFD1FAE5),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Icon(Icons.add, size: 16, color: habisTambah ? const Color(0xFFD1D5DB) : const Color(0xFF059669)),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                SizedBox(width: 8, child: Center(child: Text('$qty', style: const TextStyle(fontWeight: FontWeight.bold)))),
-                                // ⚠️ FIX: nonaktifkan tombol "+" saat qty sudah
-                                // mencapai batas stok yang tersedia.
-                                GestureDetector(
-                                  onTap: habisTambah ? null : () => widget.onTambah(item),
-                                  child: Container(
-                                    width: 30, height: 30,
-                                    decoration: BoxDecoration(
-                                      color: habisTambah ? const Color(0xFFF3F4F6) : const Color(0xFFD1FAE5),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Icon(Icons.add, size: 16, color: habisTambah ? const Color(0xFFD1D5DB) : const Color(0xFF059669)),
-                                  ),
+                                Text(
+                                  formatRupiah(subtotal),
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
                                 ),
                               ],
                             ),
-                            const SizedBox(width: 12),
-                            SizedBox(width: 70, child: Text(formatRupiah(subtotal), textAlign: TextAlign.end, style: const TextStyle(fontWeight: FontWeight.bold))),
                           ],
                         ),
                       );
@@ -866,6 +935,22 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
     }
   }
 
+  // ⚠️ FIX: qty di sheet ini sekarang juga bisa diketik langsung lewat
+  // keyboard, dengan batas stok yang sama seperti _tambah()/_kurang().
+  void _setQty(dynamic id, int newQty, int stok) {
+    final idx = CartService.cart.indexWhere((e) => e['id'] == id);
+    if (idx == -1) return;
+
+    if (newQty <= 0) {
+      setState(() => CartService.cart.removeAt(idx));
+      if (CartService.cart.isEmpty && mounted) Navigator.pop(context);
+      return;
+    }
+
+    final clamped = stok > 0 ? newQty.clamp(1, stok) : newQty;
+    setState(() => CartService.cart[idx]['qty'] = clamped);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -937,98 +1022,86 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
                 final subtotal = harga * qty;
                 final stok = _getStok(item);
                 final habisTambah = stok > 0 && qty >= stok;
+                // ⚠️ FIX: sama seperti di _CartSidePanel — nama produk
+                // dipisah jadi baris sendiri di atas, lalu stepper qty
+                // sejajar dengan subtotal di baris bawah.
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              nama,
-                              style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF111827)),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              formatRupiah(harga),
-                              style: const TextStyle(
-                                  fontSize: 11, color: Color(0xFF6B7280)),
-                            ),
-                          ],
-                        ),
+                      Text(
+                        nama,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF111827)),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(height: 6),
                       Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          GestureDetector(
-                            onTap: () => _kurang(item['id']),
-                            child: Container(
-                              width: 30,
-                              height: 30,
-                              decoration: BoxDecoration(
-                                color: qty == 1
-                                    ? const Color(0xFFFEE2E2)
-                                    : const Color(0xFFF3F4F6),
-                                borderRadius: BorderRadius.circular(8),
+                          Row(
+                            children: [
+                              GestureDetector(
+                                onTap: () => _kurang(item['id']),
+                                child: Container(
+                                  width: 30,
+                                  height: 30,
+                                  decoration: BoxDecoration(
+                                    color: qty == 1
+                                        ? const Color(0xFFFEE2E2)
+                                        : const Color(0xFFF3F4F6),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    qty == 1 ? Icons.delete_outline : Icons.remove,
+                                    size: 16,
+                                    color: qty == 1
+                                        ? const Color(0xFFDC2626)
+                                        : const Color(0xFF374151),
+                                  ),
+                                ),
                               ),
-                              child: Icon(
-                                qty == 1 ? Icons.delete_outline : Icons.remove,
-                                size: 16,
-                                color: qty == 1
-                                    ? const Color(0xFFDC2626)
-                                    : const Color(0xFF374151),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4),
+                                child: _QtyEditor(
+                                  qty: qty,
+                                  maxQty: stok > 0 ? stok : null,
+                                  onChanged: (val) =>
+                                      _setQty(item['id'], val, stok),
+                                ),
                               ),
-                            ),
+                              GestureDetector(
+                                onTap: habisTambah ? null : () => _tambah(item),
+                                child: Container(
+                                  width: 30,
+                                  height: 30,
+                                  decoration: BoxDecoration(
+                                    color: habisTambah
+                                        ? const Color(0xFFF3F4F6)
+                                        : const Color(0xFFD1FAE5),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(Icons.add,
+                                      size: 16,
+                                      color: habisTambah
+                                          ? const Color(0xFFD1D5DB)
+                                          : const Color(0xFF059669)),
+                                ),
+                              ),
+                            ],
                           ),
-                          SizedBox(
-                            width: 36,
-                            child: Center(
-                              child: Text(
-                                '$qty',
-                                style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF111827)),
-                              ),
-                            ),
-                          ),
-                          GestureDetector(
-                            onTap: habisTambah ? null : () => _tambah(item),
-                            child: Container(
-                              width: 30,
-                              height: 30,
-                              decoration: BoxDecoration(
-                                color: habisTambah
-                                    ? const Color(0xFFF3F4F6)
-                                    : const Color(0xFFD1FAE5),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(Icons.add,
-                                  size: 16,
-                                  color: habisTambah
-                                      ? const Color(0xFFD1D5DB)
-                                      : const Color(0xFF059669)),
-                            ),
+                          Text(
+                            formatRupiah(subtotal),
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF111827)),
                           ),
                         ],
-                      ),
-                      const SizedBox(width: 10),
-                      SizedBox(
-                        width: 80,
-                        child: Text(
-                          formatRupiah(subtotal),
-                          textAlign: TextAlign.end,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF111827)),
-                        ),
                       ),
                     ],
                   ),
@@ -1469,6 +1542,103 @@ class _NonTunaiCard extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// QTY EDITOR — field angka yang bisa diketik lewat keyboard,
+// dipakai bersamaan dengan tombol -/+ di semua tempat.
+// ─────────────────────────────────────────────
+class _QtyEditor extends StatefulWidget {
+  final int qty;
+  final int? maxQty; // null = tidak dibatasi
+  final ValueChanged<int> onChanged;
+  final double width;
+  final double height;
+  final double fontSize;
+
+  const _QtyEditor({
+    required this.qty,
+    required this.onChanged,
+    this.maxQty,
+    this.width = 40,
+    this.height = 28,
+    this.fontSize = 13,
+  });
+
+  @override
+  State<_QtyEditor> createState() => _QtyEditorState();
+}
+
+class _QtyEditorState extends State<_QtyEditor> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.qty.toString());
+  late final FocusNode _focusNode = FocusNode()
+    ..addListener(_onFocusChange);
+
+  @override
+  void didUpdateWidget(covariant _QtyEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Sinkronkan teks bila qty berubah dari luar (mis. lewat tombol -/+)
+    // selama field ini sedang tidak difokus/diketik oleh pengguna.
+    if (!_focusNode.hasFocus && widget.qty.toString() != _controller.text) {
+      _controller.text = widget.qty.toString();
+    }
+  }
+
+  void _onFocusChange() {
+    if (!_focusNode.hasFocus) _commit();
+  }
+
+  void _commit() {
+    final parsed = int.tryParse(_controller.text.trim());
+    int value = parsed ?? widget.qty;
+    if (value < 0) value = 0;
+    if (widget.maxQty != null && value > widget.maxQty!) {
+      value = widget.maxQty!;
+    }
+    _controller.text = value.toString();
+    if (value != widget.qty) widget.onChanged(value);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: widget.width,
+      height: widget.height,
+      child: TextField(
+        controller: _controller,
+        focusNode: _focusNode,
+        textAlign: TextAlign.center,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        textInputAction: TextInputAction.done,
+        style: TextStyle(
+          fontSize: widget.fontSize,
+          fontWeight: FontWeight.bold,
+          color: const Color(0xFF111827),
+        ),
+        decoration: const InputDecoration(
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(vertical: 4),
+          filled: true,
+          fillColor: Color(0xFFF3F4F6),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(8)),
+            borderSide: BorderSide.none,
+          ),
+        ),
+        onSubmitted: (_) => _commit(),
+      ),
+    );
+  }
+}
+
 // -----------------------------
 // ProdukCard widget (responsif)
 // -----------------------------
@@ -1482,6 +1652,7 @@ class _ProdukCard extends StatelessWidget {
   final int qty;
   final VoidCallback onTambah;
   final VoidCallback onKurang;
+  final ValueChanged<int> onSetQty;
 
   const _ProdukCard({
     required this.nama,
@@ -1493,6 +1664,7 @@ class _ProdukCard extends StatelessWidget {
     required this.qty,
     required this.onTambah,
     required this.onKurang,
+    required this.onSetQty,
   });
 
   @override
@@ -1635,34 +1807,65 @@ class _ProdukCard extends StatelessWidget {
                                 ),
                               ),
                             )
-                          // ⚠️ FIX: jika qty di keranjang sudah menyentuh batas
-                          // stok, tombol "Terpilih" ini juga dinonaktifkan
-                          // (abu-abu, tidak bisa ditekan) supaya tidak bisa
-                          // menambah qty melebihi stok yang tersedia.
-                          : GestureDetector(
-                              onTap: habisTambah ? null : onTambah,
-                              child: Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: habisTambah
-                                      ? const Color(0xFF9CA3AF)
-                                      : const Color(0xFF059669),
-                                  borderRadius: BorderRadius.circular(8),
+                          // ⚠️ FIX: qty>0 sekarang menampilkan stepper penuh
+                          // [-] [angka, bisa diketik lewat keyboard] [+],
+                          // bukan cuma tombol "Terpilih" yang hanya bisa
+                          // ditekan. Tombol "+" tetap dinonaktifkan jika qty
+                          // sudah menyentuh batas stok.
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                GestureDetector(
+                                  onTap: onKurang,
+                                  child: Container(
+                                    width: 24,
+                                    height: 24,
+                                    decoration: BoxDecoration(
+                                      color: qty == 1
+                                          ? const Color(0xFFFEE2E2)
+                                          : const Color(0xFFF3F4F6),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Icon(
+                                      qty == 1
+                                          ? Icons.delete_outline
+                                          : Icons.remove,
+                                      size: 14,
+                                      color: qty == 1
+                                          ? const Color(0xFFDC2626)
+                                          : const Color(0xFF374151),
+                                    ),
+                                  ),
                                 ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    const Icon(Icons.check, size: 12, color: Colors.white),
-                                    const SizedBox(width: 4),
-                                    Text('$qty Terpilih',
-                                        style: const TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.white)),
-                                  ],
+                                _QtyEditor(
+                                  qty: qty,
+                                  maxQty: stok > 0 ? stok : null,
+                                  width: 34,
+                                  height: 24,
+                                  fontSize: 11,
+                                  onChanged: onSetQty,
                                 ),
-                              ),
+                                GestureDetector(
+                                  onTap: habisTambah ? null : onTambah,
+                                  child: Container(
+                                    width: 24,
+                                    height: 24,
+                                    decoration: BoxDecoration(
+                                      color: habisTambah
+                                          ? const Color(0xFFE5E7EB)
+                                          : const Color(0xFF059669),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Icon(
+                                      Icons.add,
+                                      size: 14,
+                                      color: habisTambah
+                                          ? const Color(0xFF9CA3AF)
+                                          : Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                 ],
               ),
