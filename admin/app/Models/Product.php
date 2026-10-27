@@ -55,4 +55,9 @@ class Product extends Model
     {
         return $this->hasMany(ProductRecommendation::class);
     }
+
+    public function prices() {
+        return $this->hasMany(ProductPrice::class);
+    }
+
 }

@@ -29,22 +29,10 @@
             <form action="{{ route('products.store') }}" method="POST" enctype="multipart/form-data" class="p-5 sm:p-8 space-y-6">
                 @csrf
 
+                <!-- Data dasar produk -->
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <x-form-input
-                        label="SKU"
-                        name="sku"
-                        placeholder="Otomatis terisi..."
-                        :required="true"
-                        :readonly="true"
-                    />
-
-                    <x-form-input
-                        label="Nama Produk"
-                        name="name"
-                        placeholder="Nama produk"
-                        :required="true"
-                    />
-
+                    <x-form-input label="SKU" name="sku" placeholder="Otomatis terisi..." :required="true" :readonly="true" />
+                    <x-form-input label="Nama Produk" name="name" placeholder="Nama produk" :required="true" />
                     <div class="flex gap-2 items-end">
                         <div class="flex-1">
                             <x-form-select
@@ -55,72 +43,64 @@
                                 :required="true"
                             />
                         </div>
-                        <button type="button"
-                                onclick="bukaModal()"
-                                class="mb-0.5 w-10 h-10 flex items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-95 transition-all duration-150 shrink-0"
-                                title="Tambah Kategori Baru">
+                        <button type="button" onclick="bukaModal()" class="mb-0.5 w-10 h-10 flex items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100">
                             <i class="bi bi-plus-lg"></i>
                         </button>
                     </div>
                 </div>
 
-                <x-form-textarea
-                    label="Deskripsi"
-                    name="description"
-                    placeholder="Deskripsi singkat produk..."
-                    :optional="true"
-                />
+                <x-form-textarea label="Deskripsi" name="description" placeholder="Deskripsi singkat produk..." :optional="true" />
 
-                {{-- Upload Gambar --}}
+                <!-- Upload Gambar -->
                 <x-form-section title="Gambar Produk">
                     <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-2">
-                            Foto Produk <span class="text-gray-400 font-normal">(opsional)</span>
-                        </label>
+                        <label class="block text-xs font-semibold text-gray-600 mb-2">Foto Produk <span class="text-gray-400">(opsional)</span></label>
                         <div class="flex items-center gap-4">
                             <div id="preview-wrapper" class="hidden w-20 h-20 rounded-xl overflow-hidden border-2 border-emerald-100 shrink-0 shadow-sm">
                                 <img id="preview-image" src="" alt="Preview" class="w-full h-full object-cover">
                             </div>
                             <label for="image" class="flex-1 max-w-md group cursor-pointer">
-                                <div class="border-2 border-dashed border-gray-200 rounded-xl px-4 py-3.5 flex items-center gap-3 group-hover:border-emerald-300 group-hover:bg-emerald-50/40 transition-all duration-200">
-                                    <div class="w-9 h-9 rounded-lg bg-gray-100 group-hover:bg-emerald-100 flex items-center justify-center shrink-0 transition-colors">
-                                        <i class="bi bi-cloud-arrow-up text-gray-400 group-hover:text-emerald-600 transition-colors"></i>
+                                <div class="border-2 border-dashed border-gray-200 rounded-xl px-4 py-3.5 flex items-center gap-3 group-hover:border-emerald-300 group-hover:bg-emerald-50/40">
+                                    <div class="w-9 h-9 rounded-lg bg-gray-100 group-hover:bg-emerald-100 flex items-center justify-center">
+                                        <i class="bi bi-cloud-arrow-up text-gray-400 group-hover:text-emerald-600"></i>
                                     </div>
                                     <div class="min-w-0">
-                                        <p class="text-xs font-semibold text-gray-600 group-hover:text-emerald-700 transition-colors">Klik untuk unggah foto</p>
+                                        <p class="text-xs font-semibold text-gray-600 group-hover:text-emerald-700">Klik untuk unggah foto</p>
                                         <p class="text-[11px] text-gray-400">JPG, PNG, atau WEBP · Maks 2MB</p>
                                     </div>
                                 </div>
-                                <input
-                                    type="file"
-                                    name="image"
-                                    id="image"
-                                    accept="image/png, image/jpeg, image/jpg, image/webp"
-                                    onchange="previewGambar(event)"
-                                    class="hidden"
-                                >
+                                <input type="file" name="image" id="image" accept="image/*" onchange="previewGambar(event)" class="hidden">
                             </label>
                         </div>
                         @error('image')
-                            <p class="text-xs text-red-500 mt-2 flex items-center gap-1">
-                                <i class="bi bi-exclamation-circle"></i> {{ $message }}
-                            </p>
+                            <p class="text-xs text-red-500 mt-2"><i class="bi bi-exclamation-circle"></i> {{ $message }}</p>
                         @enderror
                     </div>
                 </x-form-section>
 
-                <x-form-section title="Harga">
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <x-form-input label="Harga Beli" name="purchase_price" type="number" placeholder="0" prefix="Rp" :required="true" />
-                        <x-form-input label="Harga Jual" name="selling_price" type="number" placeholder="0" prefix="Rp" :required="true" />
+                <!-- Harga Utama (gabungan harga dasar + harga per unit) -->
+                <x-form-section title="Harga Utama">
+
+                    <div id="prices-wrapper" class="space-y-3 mt-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 price-row">
+                            <x-form-input label="Satuan" name="prices[0][unit]" placeholder="pcs, renceng, kg" :required="true" />
+                            <x-form-input label="Harga Beli" name="prices[0][purchase_price]" type="number" placeholder="0" prefix="Rp" />
+                            <x-form-input label="Harga Jual" name="prices[0][selling_price]" type="number" placeholder="0" prefix="Rp" :required="true" />
+                        </div>
                     </div>
+
+                    <button type="button" onclick="addPriceRow()"
+                            class="mt-3 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-50 text-emerald-600 text-xs font-semibold hover:bg-emerald-100 transition">
+                        <i class="bi bi-plus-lg"></i> Tambah Harga Unit
+                    </button>
                 </x-form-section>
 
+                <!-- Stok & Satuan -->
                 <x-form-section title="Stok & Satuan">
                     <div class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                         <x-form-input label="Stok Awal" name="stock" type="number" value="0" :required="true" />
                         <x-form-input label="Min. Stok" name="min_stock" type="number" value="5" />
-                        <x-form-input label="Satuan" name="unit" value="pcs" placeholder="pcs, kg, liter..." :required="true" />
+                        <x-form-input label="Satuan Default" name="unit" value="pcs" placeholder="pcs, kg, liter..." :required="true" />
                     </div>
                 </x-form-section>
 
@@ -129,7 +109,6 @@
                     <x-button type="submit" icon="bi-check-circle" label="Simpan Produk" variant="primary" />
                     <x-button :href="route('products.index')" icon="bi-x-circle" label="Batal" variant="secondary" />
                 </div>
-
             </form>
         </div>
     </div>
@@ -175,27 +154,31 @@
 
     @push('scripts')
     <script>
+        // === Modal Kategori ===
         function bukaModal() {
             const modal = document.getElementById('modal-kategori');
+            if (!modal) return;
             modal.classList.remove('hidden');
             modal.classList.add('flex');
         }
 
         function tutupModal() {
             const modal = document.getElementById('modal-kategori');
+            if (!modal) return;
             modal.classList.add('hidden');
             modal.classList.remove('flex');
         }
 
-        document.getElementById('modal-kategori').addEventListener('click', function(e) {
+        document.getElementById('modal-kategori')?.addEventListener('click', function(e) {
             if (e.target === this) tutupModal();
         });
 
-        document.getElementById('form-kategori').addEventListener('submit', async function(e) {
+        document.getElementById('form-kategori')?.addEventListener('submit', async function(e) {
             e.preventDefault();
             const input = this.querySelector('input[name="category_name"]');
             const name = input.value.trim();
             if (!name) return;
+
             try {
                 const response = await fetch('{{ route('categories.quick-store') }}', {
                     method: 'POST',
@@ -205,15 +188,20 @@
                     },
                     body: JSON.stringify({ name }),
                 });
+
                 const data = await response.json();
                 if (data.success) {
                     const select = document.querySelector('select[name="category_id"]');
-                    const option = new Option(data.category.name, data.category.id, true, true);
-                    select.add(option);
-                    select.value = data.category.id;
+                    if (select) {
+                        const option = new Option(data.category.name, data.category.id, true, true);
+                        select.add(option);
+                        select.value = data.category.id;
+                    }
                     input.value = '';
                     tutupModal();
                     generateSKU();
+                } else {
+                    console.error('Respon gagal:', data);
                 }
             } catch (error) {
                 console.error('Gagal:', error);
@@ -241,8 +229,7 @@
             const categoryText = categorySelect.options[categorySelect.selectedIndex]?.text ?? '';
             const nameText = nameInput.value ?? '';
 
-            const singkatKategori = (categoryText && !categoryText.startsWith('--'))
-                ? singkat(categoryText) : '';
+            const singkatKategori = (categoryText && !categoryText.startsWith('--')) ? singkat(categoryText) : '';
             const singkatNama = singkat(nameText);
 
             if (!singkatKategori && !singkatNama) {
@@ -284,7 +271,51 @@
                 preview.src = '';
             }
         }
+
+        // === Harga Per Unit Dinamis (clone baris pertama biar identik 100%) ===
+        let priceIndex = 1;
+
+        function addPriceRow() {
+            const wrapper = document.getElementById('prices-wrapper');
+            const firstRow = wrapper.querySelector('.price-row');
+            if (!wrapper || !firstRow) return;
+
+            // Clone baris pertama apa adanya (markup, class, struktur — semuanya sama persis)
+            const newRow = firstRow.cloneNode(true);
+
+            // Update nama field & kosongkan value pada input di dalam clone
+            newRow.querySelectorAll('input').forEach(input => {
+                input.value = '';
+                input.name = input.name.replace(/prices\[\d+\]/, `prices[${priceIndex}]`);
+                input.removeAttribute('required'); // hanya baris pertama yang wajib
+                input.id = ''; // hindari id duplikat kalau x-form-input pakai id
+            });
+
+            // Hapus atribut "required" dari label bintang merah kalau ada (opsional, biar rapi)
+            newRow.querySelectorAll('.text-red-500').forEach(el => {
+                if (el.textContent.trim() === '*') el.remove();
+            });
+
+            // Tambah tombol hapus di baris baru (baris pertama tidak perlu tombol hapus)
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.onclick = function () { removePriceRow(this); };
+            deleteBtn.className = 'mb-0.5 w-10 h-10 flex items-center justify-center rounded-xl bg-red-50 text-red-500 hover:bg-red-100 transition shrink-0 self-end';
+            deleteBtn.innerHTML = '<i class="bi bi-trash3"></i>';
+
+            // Bungkus row jadi flex supaya tombol hapus nempel di kanan, tanpa merusak grid asli
+            newRow.classList.add('items-end');
+            newRow.appendChild(deleteBtn);
+
+            wrapper.appendChild(newRow);
+            priceIndex++;
+        }
+
+        function removePriceRow(btn) {
+            const row = btn.closest('.price-row');
+            if (row) row.remove();
+        }
     </script>
-@endpush
+    @endpush
 
 </x-layouts.layout>

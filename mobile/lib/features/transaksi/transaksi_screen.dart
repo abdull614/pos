@@ -8,6 +8,7 @@ import '../cart/cart_service.dart';
 import 'struk_model.dart';
 import 'struk_bottom_sheet.dart';
 import '../../widgets/cari_kode_produk_sheet.dart';
+import '../../widgets/pilih_satuan_sheet.dart';
 
 class TransaksiScreen extends StatefulWidget {
   const TransaksiScreen({super.key});
@@ -25,7 +26,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
   bool isCheckingOut = false;
   final TextEditingController _searchController = TextEditingController();
 
-  // Layout constants
   static const double cartPanelWidth = 260;
   static const double cartBarHeight = 92;
 
@@ -56,10 +56,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
 
       setState(() {
         _produkList = produk;
-        // ⚠️ FIX: hanya produk yang aktif (is_active) DAN masih ada stok
-        // yang ditampilkan di halaman transaksi. Produk yang stoknya habis
-        // otomatis is_active=false dari backend, jadi kondisi ini cukup,
-        // tapi cek stok tetap dipertahankan sebagai lapisan keamanan kedua.
         _filteredList = produk
             .where((p) => _isActive(p) && _getStok(p) > 0)
             .toList();
@@ -84,8 +80,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
         final matchKat =
             _selectedKategori == 'Semua' || kategori == _selectedKategori;
         final matchQ = nama.contains(query);
-        // ⚠️ FIX: produk yang tidak aktif atau stoknya habis tetap disaring
-        // keluar walau sedang melakukan pencarian atau pindah kategori.
         final aktifDanAdaStok = _isActive(p) && _getStok(p) > 0;
         return matchKat && matchQ && aktifDanAdaStok;
       }).toList();
@@ -113,26 +107,15 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
       final response =
           await ApiService.get('products/by-barcode/${Uri.encodeComponent(kode)}');
       final produk = Map<String, dynamic>.from(response);
-      _tambah(produk);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${produk['name']} ditambahkan ke keranjang')),
-        );
-      }
+      await _tambah(produk);
     } catch (_) {
-      // Fallback: coba cari lewat SKU/nama kalau barcode tidak ketemu persis
       try {
         final response =
             await ApiService.get('products?search=${Uri.encodeComponent(kode)}');
         final List data = response is List ? response : (response['data'] ?? []);
         if (data.isNotEmpty) {
           final produk = Map<String, dynamic>.from(data.first);
-          _tambah(produk);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('${produk['name']} ditambahkan ke keranjang')),
-            );
-          }
+          await _tambah(produk);
           return;
         }
       } catch (_) {}
@@ -145,24 +128,13 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
     }
   }
 
-  int _getQty(dynamic id) {
-    final idx = CartService.cart.indexWhere((e) => e['id'] == id);
-    return idx != -1 ? CartService.cart[idx]['qty'] as int : 0;
-  }
-
-  // Helper terpusat untuk mengambil nilai stok dari sebuah map produk/item.
+  // Helper stok & status aktif (level produk, dipakai untuk data dari API produk)
   int _getStok(Map<String, dynamic> produk) {
     final stok = produk['stock'] ?? produk['stok'] ?? 0;
     if (stok is int) return stok;
     return int.tryParse(stok.toString()) ?? 0;
   }
 
-  // ⚠️ FIX: helper untuk cek status aktif produk. Backend sekarang otomatis
-  // men-set is_active = false saat stok produk 0 (lihat Product::boot() di
-  // Laravel), jadi field ini adalah sumber kebenaran utama untuk menentukan
-  // apakah sebuah produk boleh tampil di halaman transaksi. Default true
-  // kalau field tidak ada, supaya data lama yang belum punya kolom ini tidak
-  // ikut hilang dari daftar.
   bool _isActive(Map<String, dynamic> produk) {
     final aktif = produk['is_active'] ?? produk['aktif'];
     if (aktif == null) return true;
@@ -171,16 +143,83 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
     return aktif.toString().toLowerCase() == 'true' || aktif.toString() == '1';
   }
 
-  // ⚠️ FIX: _tambah sekarang menjadi satu-satunya gerbang penambahan qty.
-  // Produk dengan stok habis (stok <= 0) tidak bisa ditambahkan sama sekali,
-  // dan qty di keranjang tidak boleh melebihi stok yang tersedia.
-  void _tambah(Map<String, dynamic> produk) {
-    final stok = _getStok(produk);
+  /// Kumpulan pilihan satuan untuk sebuah produk: base (unit + selling_price)
+  /// digabung dengan isi `prices[]` dari Laravel, dedupe berdasarkan nama satuan.
+  List<Map<String, dynamic>> _satuanList(Map<String, dynamic> produk) {
+    final List<Map<String, dynamic>> list = [];
 
-    // Stok habis -> nonaktif total, tidak melakukan apa-apa.
+    final baseUnit = (produk['unit'] ?? '').toString();
+    if (baseUnit.isNotEmpty && produk['selling_price'] != null) {
+      list.add({
+        'unit': baseUnit,
+        'selling_price': produk['selling_price'],
+        'purchase_price': produk['purchase_price'],
+      });
+    }
+
+    final prices = produk['prices'];
+    if (prices is List) {
+      for (var p in prices) {
+        final unit = (p['unit'] ?? '').toString();
+        final sell = p['selling_price'];
+        if (unit.isEmpty || sell == null) continue;
+        if (list.any((e) => e['unit'] == unit)) continue; // hindari duplikat
+        list.add({
+          'unit': unit,
+          'selling_price': sell,
+          'purchase_price': p['purchase_price'],
+        });
+      }
+    }
+
+    return list;
+  }
+
+  /// Total qty produk di keranjang, dijumlahkan dari semua satuan yang dipilih.
+  int _getQtyTotal(dynamic produkId) {
+    return CartService.cart
+        .where((e) => e['id'] == produkId)
+        .fold<int>(0, (s, e) => s + (e['qty'] as int));
+  }
+
+  /// Alur "Tambah" dari daftar produk: kalau punya >1 satuan, tampilkan
+  /// bottom sheet pemilihan satuan dulu. Kalau cuma 1, langsung tambah.
+  Future<void> _tambah(Map<String, dynamic> produk) async {
+    final stok = _getStok(produk);
     if (stok <= 0) return;
 
-    final qtySekarang = _getQty(produk['id']);
+    final satuanList = _satuanList(produk);
+    if (satuanList.isEmpty) return;
+
+    if (satuanList.length == 1) {
+      _tambahDenganSatuan(produk, satuanList.first, stok);
+      return;
+    }
+
+    final dipilih = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => PilihSatuanSheet(produk: produk, satuanList: satuanList),
+    );
+
+    if (dipilih == null || !mounted) return;
+    _tambahDenganSatuan(produk, dipilih, stok);
+  }
+
+  void _tambahDenganSatuan(
+    Map<String, dynamic> produk,
+    Map<String, dynamic> satuan,
+    int stok,
+  ) {
+    final unit = satuan['unit'].toString();
+    final key = CartService.cartKey(produk['id'], unit);
+    final existing = CartService.cart.firstWhere(
+      (e) => e['cart_key'] == key,
+      orElse: () => {'qty': 0},
+    );
+    final qtySekarang = existing['qty'] as int;
+
     if (qtySekarang >= stok) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Qty sudah mencapai batas stok tersedia')),
@@ -188,12 +227,23 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
       return;
     }
 
-    setState(() => CartService.addToCart(produk));
+    setState(() {
+      CartService.addToCart(
+        produk,
+        unit: unit,
+        sellingPrice: num.tryParse(satuan['selling_price'].toString()) ?? 0,
+        purchasePrice: satuan['purchase_price'] == null
+            ? null
+            : num.tryParse(satuan['purchase_price'].toString()),
+      );
+    });
   }
 
-  void _kurang(dynamic id) {
+  // === Operasi keranjang, semuanya berbasis cart_key (id + unit) ===
+
+  void _kurangKey(String cartKey) {
     setState(() {
-      final idx = CartService.cart.indexWhere((e) => e['id'] == id);
+      final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
       if (idx != -1) {
         CartService.cart[idx]['qty']--;
         if (CartService.cart[idx]['qty'] <= 0) {
@@ -203,37 +253,32 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
     });
   }
 
-  // ⚠️ FIX: memungkinkan qty diketik langsung lewat keyboard (bukan cuma
-  // lewat tombol -/+). Nilai otomatis dibatasi ke rentang [0, stok]; qty 0
-  // akan menghapus produk dari keranjang.
-  void _setQty(Map<String, dynamic> produk, int newQty) {
-    final id = produk['id'];
-    final stok = _getStok(produk);
-    final idx = CartService.cart.indexWhere((e) => e['id'] == id);
-
-    if (newQty <= 0) {
-      if (idx != -1) setState(() => CartService.cart.removeAt(idx));
+  void _tambahKey(String cartKey) {
+    final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
+    if (idx == -1) return;
+    final item = CartService.cart[idx];
+    final stok = _getStok(item);
+    final qty = item['qty'] as int;
+    if (stok > 0 && qty >= stok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Qty sudah mencapai batas stok tersedia')),
+      );
       return;
     }
+    setState(() => item['qty'] = qty + 1);
+  }
 
-    final melebihiStok = stok > 0 && newQty > stok;
-    final clamped = stok > 0 ? newQty.clamp(1, stok) : newQty;
-
+  void _setQtyKey(String cartKey, int newQty, int stok) {
     setState(() {
-      if (idx != -1) {
-        CartService.cart[idx]['qty'] = clamped;
-      } else {
-        CartService.addToCart(produk);
-        final newIdx = CartService.cart.indexWhere((e) => e['id'] == id);
-        if (newIdx != -1) CartService.cart[newIdx]['qty'] = clamped;
+      final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
+      if (idx == -1) return;
+      if (newQty <= 0) {
+        CartService.cart.removeAt(idx);
+        return;
       }
+      final clamped = stok > 0 ? newQty.clamp(1, stok) : newQty;
+      CartService.cart[idx]['qty'] = clamped;
     });
-
-    if (melebihiStok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Qty melebihi stok, disesuaikan otomatis')),
-      );
-    }
   }
 
   Future<void> _checkout() async {
@@ -250,8 +295,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
         builder: (ctx) => _KeranjangDetailSheet(
-          items: CartService.cart,
-          total: CartService.totalHarga,
           onLanjutBayar: () => Navigator.pop(ctx, true),
         ),
       );
@@ -292,10 +335,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
 
         if (utangPayload == null || !mounted) return;
 
-        // ⚠️ FIX: due_date dari TambahUtangForm sekarang ikut diteruskan.
-        // Sebelumnya hanya customer_id & notes yang dikirim, sehingga
-        // jatuh tempo yang dipilih kasir di form selalu hilang dan
-        // tersimpan null di database.
         final response = await CartService.checkout(
           paymentType: 'debt',
           customerId: utangPayload!['customer_id'],
@@ -326,9 +365,7 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
           builder: (_) => StrukBottomSheet(struk: struk),
         );
       } else {
-        final response = await CartService.checkout(
-          paymentType: paymentType,
-        );
+        final response = await CartService.checkout(paymentType: paymentType);
 
         if (!mounted) return;
         setState(() {});
@@ -375,7 +412,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
         bottom: true,
         child: Column(
           children: [
-            // Search + Filter
             Container(
               color: Colors.white,
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -461,7 +497,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
               ),
             ),
 
-            // Content area
             Expanded(
               child: isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -469,7 +504,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                       ? Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Produk grid (kiri) — 3 kolom di tablet
                             Expanded(
                               child: Padding(
                                 padding:
@@ -477,8 +511,6 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                                 child: _buildGrid(crossCount: 3),
                               ),
                             ),
-
-                            // Panel Keranjang (kanan)
                             Container(
                               width: cartPanelWidth,
                               margin:
@@ -497,24 +529,14 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                               child: _CartSidePanel(
                                 onCheckout: _checkout,
                                 isCheckingOut: isCheckingOut,
-                                onTambah: _tambah,
-                                onKurang: _kurang,
-                                onSetQty: (id, newQty, stok) {
-                                  final idx = CartService.cart
-                                      .indexWhere((e) => e['id'] == id);
-                                  if (idx == -1) return;
-                                  _setQty(
-                                    Map<String, dynamic>.from(
-                                        CartService.cart[idx]),
-                                    newQty,
-                                  );
-                                },
+                                onTambahKey: _tambahKey,
+                                onKurangKey: _kurangKey,
+                                onSetQtyKey: _setQtyKey,
                               ),
                             ),
                           ],
                         )
-                      : // Mobile: 2 kolom + bottom cart bar
-                      Column(
+                      : Column(
                           children: [
                             Expanded(child: _buildGrid(crossCount: 2)),
                             if (CartService.cart.isNotEmpty) _buildCartBar(),
@@ -545,22 +567,13 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
 
     final cardWidth = (availableWidth - spacing) / crossCount;
 
-    // Tinggi card tetap — cukup untuk semua konten (termasuk stepper qty
-    // yang bisa diketik) tanpa overflow.
     final cardHeight = isTablet
         ? (isPortrait ? 246.0 : 226.0)
         : (isPortrait ? 226.0 : 211.0);
 
     final childAspectRatio = cardWidth / cardHeight;
-
-    // Grid sekarang jadi sibling dari cart bar (bukan ditumpuk via Stack),
-    // jadi cukup padding standar — tidak perlu lagi menghitung tinggi
-    // cart bar secara manual.
     const bottomPadding = 12.0;
 
-    // Kunci text scaling di area grid supaya pengaturan "ukuran font" HP
-    // pengguna tidak membuat konten kartu overflow dan terlihat saling
-    // tumpuk tindih.
     return MediaQuery(
       data: mq.copyWith(textScaler: const TextScaler.linear(1.0)),
       child: GridView.builder(
@@ -574,29 +587,40 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
         itemCount: _filteredList.length,
         itemBuilder: (context, index) {
           final produk = _filteredList[index];
-          final qty = _getQty(produk['id']);
+          final satuanList = _satuanList(produk);
+          final multiSatuan = satuanList.length > 1;
+          final qtyTotal = _getQtyTotal(produk['id']);
           final stok = _getStok(produk);
-          final harga = double.parse(produk['selling_price'].toString());
+          final hargaTampil = satuanList.isNotEmpty
+              ? num.tryParse(satuanList.first['selling_price'].toString()) ?? 0
+              : double.tryParse(produk['selling_price'].toString()) ?? 0;
           final kat = (produk['category']?['name'] ?? produk['kategori'] ?? '')
               .toString()
               .toUpperCase();
           final menipis = stok > 0 && stok < 10;
 
-          // Catatan: produk dengan stok habis (stok <= 0) sudah disaring keluar
-          // di _applyFilter()/_loadProduk(), jadi tidak akan pernah sampai ke
-          // sini. GestureDetector di bawah tetap aman karena _tambah() masih
-          // punya guard stok sebagai lapisan pertahanan kedua.
+          // cart_key untuk kasus 1 satuan saja (dipakai stepper langsung di kartu)
+          final singleUnitKey = satuanList.length == 1
+              ? CartService.cartKey(produk['id'], satuanList.first['unit'])
+              : null;
+
           return _ProdukCard(
             nama: produk['name'] ?? '-',
-            harga: harga,
+            harga: hargaTampil.toDouble(),
             stok: stok,
             kategori: kat,
             menipis: menipis,
             imageUrl: produk['image_url'] ?? produk['foto'] ?? '',
-            qty: qty,
+            qty: qtyTotal,
+            multiSatuan: multiSatuan,
+            jumlahSatuan: satuanList.length,
             onTambah: () => _tambah(produk),
-            onKurang: () => _kurang(produk['id']),
-            onSetQty: (val) => _setQty(produk, val),
+            onKurang: singleUnitKey == null
+                ? null
+                : () => _kurangKey(singleUnitKey),
+            onSetQty: singleUnitKey == null
+                ? null
+                : (val) => _setQtyKey(singleUnitKey, val, stok),
           );
         },
       ),
@@ -606,10 +630,12 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
   Widget _buildCartBar() {
     final lastItem = CartService.cart.last;
     final namaItem = lastItem['name'] ?? '-';
+    final unitItem = lastItem['unit']?.toString();
     final hargaItem = double.parse(lastItem['selling_price'].toString());
     final qtyItem = lastItem['qty'] as int;
     final stokItem = _getStok(lastItem);
     final habisItem = stokItem <= 0 || qtyItem >= stokItem;
+    final cartKey = lastItem['cart_key'] as String;
 
     return SafeArea(
       top: false,
@@ -639,7 +665,9 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    namaItem,
+                    unitItem != null && unitItem.isNotEmpty
+                        ? '$namaItem ($unitItem)'
+                        : namaItem,
                     style: const TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 13,
@@ -657,7 +685,7 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
             Row(
               children: [
                 GestureDetector(
-                  onTap: () => _kurang(lastItem['id']),
+                  onTap: () => _kurangKey(cartKey),
                   child: Container(
                     width: 28,
                     height: 28,
@@ -676,14 +704,11 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
                     width: 44,
                     height: 30,
                     fontSize: 14,
-                    onChanged: (val) => _setQty(lastItem, val),
+                    onChanged: (val) => _setQtyKey(cartKey, val, stokItem),
                   ),
                 ),
-                // ⚠️ FIX: tombol tambah di cart bar juga dinonaktifkan bila
-                // qty sudah mencapai batas stok, supaya konsisten dengan
-                // aturan di _tambah().
                 GestureDetector(
-                  onTap: habisItem ? null : () => _tambah(lastItem),
+                  onTap: habisItem ? null : () => _tambahKey(cartKey),
                   child: Container(
                     width: 28,
                     height: 28,
@@ -729,16 +754,16 @@ class _TransaksiScreenState extends State<TransaksiScreen> {
 class _CartSidePanel extends StatefulWidget {
   final VoidCallback onCheckout;
   final bool isCheckingOut;
-  final void Function(Map<String, dynamic>) onTambah;
-  final void Function(dynamic) onKurang;
-  final void Function(dynamic id, int newQty, int stok) onSetQty;
+  final void Function(String cartKey) onTambahKey;
+  final void Function(String cartKey) onKurangKey;
+  final void Function(String cartKey, int newQty, int stok) onSetQtyKey;
 
   const _CartSidePanel({
     required this.onCheckout,
     required this.isCheckingOut,
-    required this.onTambah,
-    required this.onKurang,
-    required this.onSetQty,
+    required this.onTambahKey,
+    required this.onKurangKey,
+    required this.onSetQtyKey,
   });
 
   @override
@@ -778,23 +803,21 @@ class _CartSidePanelState extends State<_CartSidePanel> {
                     itemBuilder: (_, i) {
                       final item = items[i];
                       final nama = item['name'] ?? '-';
+                      final unit = item['unit']?.toString();
                       final qty = item['qty'] as int;
                       final harga = double.parse(item['selling_price'].toString());
                       final subtotal = harga * qty;
                       final stok = _getStok(item);
                       final habisTambah = stok > 0 && qty >= stok;
-                      // ⚠️ FIX: layout item keranjang diubah jadi 2 baris —
-                      // baris 1 nama produk (agar tidak terpotong/turun
-                      // baris berkali-kali seperti sebelumnya), baris 2
-                      // stepper qty [-  angka  +] di kiri sejajar dengan
-                      // subtotal di kanan.
+                      final cartKey = item['cart_key'] as String;
+
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              nama,
+                              unit != null && unit.isNotEmpty ? '$nama ($unit)' : nama,
                               style: const TextStyle(fontWeight: FontWeight.w600),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -806,7 +829,7 @@ class _CartSidePanelState extends State<_CartSidePanel> {
                                 Row(
                                   children: [
                                     GestureDetector(
-                                      onTap: () => widget.onKurang(item['id']),
+                                      onTap: () => widget.onKurangKey(cartKey),
                                       child: Container(
                                         width: 30, height: 30,
                                         decoration: BoxDecoration(
@@ -822,13 +845,11 @@ class _CartSidePanelState extends State<_CartSidePanel> {
                                         qty: qty,
                                         maxQty: stok > 0 ? stok : null,
                                         onChanged: (val) =>
-                                            widget.onSetQty(item['id'], val, stok),
+                                            widget.onSetQtyKey(cartKey, val, stok),
                                       ),
                                     ),
-                                    // ⚠️ FIX: nonaktifkan tombol "+" saat qty sudah
-                                    // mencapai batas stok yang tersedia.
                                     GestureDetector(
-                                      onTap: habisTambah ? null : () => widget.onTambah(item),
+                                      onTap: habisTambah ? null : () => widget.onTambahKey(cartKey),
                                       child: Container(
                                         width: 30, height: 30,
                                         decoration: BoxDecoration(
@@ -885,15 +906,9 @@ class _CartSidePanelState extends State<_CartSidePanel> {
 
 // KERANJANG DETAIL SHEET (dipanggil di proses checkout)
 class _KeranjangDetailSheet extends StatefulWidget {
-  final List<Map<String, dynamic>> items;
-  final int total;
   final VoidCallback onLanjutBayar;
 
-  const _KeranjangDetailSheet({
-    required this.items,
-    required this.total,
-    required this.onLanjutBayar,
-  });
+  const _KeranjangDetailSheet({required this.onLanjutBayar});
 
   @override
   State<_KeranjangDetailSheet> createState() => _KeranjangDetailSheetState();
@@ -909,19 +924,17 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
     return int.tryParse(stok.toString()) ?? 0;
   }
 
-  // ⚠️ FIX: sheet ini sebelumnya memanggil CartService.addToCart() langsung,
-  // jadi lolos dari pengecekan stok yang ada di _tambah() milik
-  // TransaksiScreen. Sekarang qty juga tidak boleh melebihi stok di sini.
-  void _tambah(Map<String, dynamic> item) {
-    final stok = _getStok(item);
-    final qtySekarang = item['qty'] as int;
-    if (stok > 0 && qtySekarang >= stok) return;
-    setState(() => CartService.addToCart(item));
+  void _tambah(String cartKey, int stok, int qty) {
+    if (stok > 0 && qty >= stok) return;
+    setState(() {
+      final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
+      if (idx != -1) CartService.cart[idx]['qty'] = qty + 1;
+    });
   }
 
-  void _kurang(dynamic id) {
+  void _kurang(String cartKey) {
     setState(() {
-      final idx = CartService.cart.indexWhere((e) => e['id'] == id);
+      final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
       if (idx != -1) {
         CartService.cart[idx]['qty']--;
         if (CartService.cart[idx]['qty'] <= 0) {
@@ -935,10 +948,8 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
     }
   }
 
-  // ⚠️ FIX: qty di sheet ini sekarang juga bisa diketik langsung lewat
-  // keyboard, dengan batas stok yang sama seperti _tambah()/_kurang().
-  void _setQty(dynamic id, int newQty, int stok) {
-    final idx = CartService.cart.indexWhere((e) => e['id'] == id);
+  void _setQty(String cartKey, int newQty, int stok) {
+    final idx = CartService.cart.indexWhere((e) => e['cart_key'] == cartKey);
     if (idx == -1) return;
 
     if (newQty <= 0) {
@@ -1017,21 +1028,21 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
               itemBuilder: (_, i) {
                 final item = _items[i];
                 final nama = item['name'] ?? '-';
+                final unit = item['unit']?.toString();
                 final qty = item['qty'] as int;
                 final harga = double.parse(item['selling_price'].toString());
                 final subtotal = harga * qty;
                 final stok = _getStok(item);
                 final habisTambah = stok > 0 && qty >= stok;
-                // ⚠️ FIX: sama seperti di _CartSidePanel — nama produk
-                // dipisah jadi baris sendiri di atas, lalu stepper qty
-                // sejajar dengan subtotal di baris bawah.
+                final cartKey = item['cart_key'] as String;
+
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 10),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        nama,
+                        unit != null && unit.isNotEmpty ? '$nama ($unit)' : nama,
                         style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
@@ -1046,7 +1057,7 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
                           Row(
                             children: [
                               GestureDetector(
-                                onTap: () => _kurang(item['id']),
+                                onTap: () => _kurang(cartKey),
                                 child: Container(
                                   width: 30,
                                   height: 30,
@@ -1071,11 +1082,11 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
                                   qty: qty,
                                   maxQty: stok > 0 ? stok : null,
                                   onChanged: (val) =>
-                                      _setQty(item['id'], val, stok),
+                                      _setQty(cartKey, val, stok),
                                 ),
                               ),
                               GestureDetector(
-                                onTap: habisTambah ? null : () => _tambah(item),
+                                onTap: habisTambah ? null : () => _tambah(cartKey, stok, qty),
                                 child: Container(
                                   width: 30,
                                   height: 30,
@@ -1160,7 +1171,7 @@ class _KeranjangDetailSheetState extends State<_KeranjangDetailSheet> {
 }
 
 // ─────────────────────────────────────────────
-// PAYMENT METHOD SHEET
+// PAYMENT METHOD SHEET (tidak berubah)
 // ─────────────────────────────────────────────
 class _PaymentMethodSheet extends StatefulWidget {
   final int total;
@@ -1493,7 +1504,7 @@ class _PaymentMethodSheetState extends State<_PaymentMethodSheet> {
 }
 
 // ─────────────────────────────────────────────
-// KARTU NON-TUNAI
+// KARTU NON-TUNAI (tidak berubah)
 // ─────────────────────────────────────────────
 class _NonTunaiCard extends StatelessWidget {
   final String label;
@@ -1543,12 +1554,11 @@ class _NonTunaiCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-// QTY EDITOR — field angka yang bisa diketik lewat keyboard,
-// dipakai bersamaan dengan tombol -/+ di semua tempat.
+// QTY EDITOR (tidak berubah)
 // ─────────────────────────────────────────────
 class _QtyEditor extends StatefulWidget {
   final int qty;
-  final int? maxQty; // null = tidak dibatasi
+  final int? maxQty;
   final ValueChanged<int> onChanged;
   final double width;
   final double height;
@@ -1576,8 +1586,6 @@ class _QtyEditorState extends State<_QtyEditor> {
   @override
   void didUpdateWidget(covariant _QtyEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Sinkronkan teks bila qty berubah dari luar (mis. lewat tombol -/+)
-    // selama field ini sedang tidak difokus/diketik oleh pengguna.
     if (!_focusNode.hasFocus && widget.qty.toString() != _controller.text) {
       _controller.text = widget.qty.toString();
     }
@@ -1650,9 +1658,11 @@ class _ProdukCard extends StatelessWidget {
   final bool menipis;
   final String imageUrl;
   final int qty;
-  final VoidCallback onTambah;
-  final VoidCallback onKurang;
-  final ValueChanged<int> onSetQty;
+  final bool multiSatuan;
+  final int jumlahSatuan;
+  final Future<void> Function() onTambah;
+  final VoidCallback? onKurang;
+  final ValueChanged<int>? onSetQty;
 
   const _ProdukCard({
     required this.nama,
@@ -1662,15 +1672,17 @@ class _ProdukCard extends StatelessWidget {
     required this.menipis,
     required this.imageUrl,
     required this.qty,
+    required this.multiSatuan,
+    required this.jumlahSatuan,
     required this.onTambah,
-    required this.onKurang,
-    required this.onSetQty,
+    this.onKurang,
+    this.onSetQty,
   });
 
   @override
   Widget build(BuildContext context) {
     final habis = stok <= 0;
-    final habisTambah = habis || qty >= stok;
+    final habisTambah = habis || (!multiSatuan && qty >= stok);
 
     return Container(
       decoration: BoxDecoration(
@@ -1680,11 +1692,10 @@ class _ProdukCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Gambar
           ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
             child: SizedBox(
-              height: 90, // ← sesuaikan jika perlu
+              height: 90,
               width: double.infinity,
               child: imageUrl.isNotEmpty
                   ? Image.network(
@@ -1695,14 +1706,12 @@ class _ProdukCard extends StatelessWidget {
                   : _placeholder(),
             ),
           ),
-          // Area teks & tombol
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Kategori + badge stok
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1746,7 +1755,6 @@ class _ProdukCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  // Nama
                   Text(
                     nama,
                     style: const TextStyle(
@@ -1757,16 +1765,37 @@ class _ProdukCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 3),
-                  // Harga
-                  Text(
-                    formatRupiah(harga),
-                    style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF059669)),
+                  Row(
+                    children: [
+                      Text(
+                        'mulai ${formatRupiah(harga)}',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF059669)),
+                      ),
+                      if (multiSatuan) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '$jumlahSatuan satuan',
+                            style: const TextStyle(
+                                fontSize: 7,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF2563EB)),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const Spacer(),
-                  // Tombol
+                  // Kalau produk punya banyak satuan, cukup tombol "Tambah"
+                  // (buka sheet pilih satuan) — badge qty total di sebelahnya.
                   habis
                       ? Container(
                           width: double.infinity,
@@ -1783,35 +1812,39 @@ class _ProdukCard extends StatelessWidget {
                                     color: Color(0xFFDC2626))),
                           ),
                         )
-                      : qty == 0
+                      : (multiSatuan || qty == 0)
                           ? GestureDetector(
-                              onTap: onTambah,
+                              onTap: () => onTambah(),
                               child: Container(
                                 width: double.infinity,
                                 padding: const EdgeInsets.symmetric(vertical: 6),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFF3F4F6),
+                                  color: qty > 0
+                                      ? const Color(0xFFD1FAE5)
+                                      : const Color(0xFFF3F4F6),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
-                                child: const Row(
+                                child: Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Icon(Icons.add, size: 12, color: Color(0xFF374151)),
-                                    SizedBox(width: 4),
-                                    Text('Tambah',
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w600,
-                                            color: Color(0xFF374151))),
+                                    Icon(Icons.add, size: 12,
+                                        color: qty > 0
+                                            ? const Color(0xFF059669)
+                                            : const Color(0xFF374151)),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      qty > 0 ? 'Tambah ($qty)' : 'Tambah',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: qty > 0
+                                              ? const Color(0xFF059669)
+                                              : const Color(0xFF374151)),
+                                    ),
                                   ],
                                 ),
                               ),
                             )
-                          // ⚠️ FIX: qty>0 sekarang menampilkan stepper penuh
-                          // [-] [angka, bisa diketik lewat keyboard] [+],
-                          // bukan cuma tombol "Terpilih" yang hanya bisa
-                          // ditekan. Tombol "+" tetap dinonaktifkan jika qty
-                          // sudah menyentuh batas stok.
                           : Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
@@ -1843,10 +1876,10 @@ class _ProdukCard extends StatelessWidget {
                                   width: 34,
                                   height: 24,
                                   fontSize: 11,
-                                  onChanged: onSetQty,
+                                  onChanged: onSetQty ?? (_) {},
                                 ),
                                 GestureDetector(
-                                  onTap: habisTambah ? null : onTambah,
+                                  onTap: habisTambah ? null : () => onTambah(),
                                   child: Container(
                                     width: 24,
                                     height: 24,

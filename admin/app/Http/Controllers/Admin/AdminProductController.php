@@ -2,12 +2,9 @@
 
 namespace App\Http\Controllers\Admin;
 
-
 use App\Http\Controllers\Controller;
-
 use App\Models\Product;
 use App\Models\Category;
-
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -19,11 +16,11 @@ class AdminProductController extends Controller
     {
         $search = $request->input('search');
 
-        $products = Product::with('category')
+        $products = Product::with(['category','prices'])
             ->when($search, function ($query, $search) {
                 $query->where(function ($q) use ($search) {
                     $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('sku', 'like', "%{$search}%");
+                      ->orWhere('sku', 'like', "%{$search}%");
                 });
             })
             ->paginate(15)
@@ -51,6 +48,12 @@ class AdminProductController extends Controller
             'min_stock' => 'integer|min:0',
             'unit' => 'required|string',
             'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'skip_purchase_record' => 'nullable|boolean',
+            // daftar harga per unit
+            'prices' => 'nullable|array',
+            'prices.*.unit' => 'required|string',
+            'prices.*.purchase_price' => 'required|numeric|min:0',
+            'prices.*.selling_price' => 'required|numeric|min:0',
         ], [
             'sku.required' => 'SKU wajib diisi',
             'sku.unique' => 'SKU sudah terdaftar',
@@ -64,7 +67,15 @@ class AdminProductController extends Controller
             $validated['image'] = $request->file('image')->store('products', 'public');
         }
 
-        Product::create($validated);
+        DB::transaction(function () use ($validated, $request) {
+            $product = Product::create($validated);
+
+            if ($request->has('prices')) {
+                foreach ($request->prices as $price) {
+                    $product->prices()->create($price);
+                }
+            }
+        });
 
         return redirect('/admin/products')->with('success', 'Produk berhasil ditambahkan');
     }
@@ -72,6 +83,7 @@ class AdminProductController extends Controller
     public function edit(Product $product)
     {
         $categories = Category::where('is_active', true)->get();
+        $product->load('prices');
         return view('admin.products.edit', compact('product', 'categories'));
     }
 
@@ -88,6 +100,11 @@ class AdminProductController extends Controller
             'min_stock' => 'integer|min:0',
             'unit' => 'required|string',
             'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'skip_purchase_record' => 'nullable|boolean',
+            'prices' => 'nullable|array',
+            'prices.*.unit' => 'required|string',
+            'prices.*.purchase_price' => 'required|numeric|min:0',
+            'prices.*.selling_price' => 'required|numeric|min:0',
             'remove_image' => 'nullable|boolean',
         ], [
             'sku.required' => 'SKU wajib diisi',
@@ -98,13 +115,11 @@ class AdminProductController extends Controller
             'image.max' => 'Ukuran gambar maksimal 2MB',
         ]);
 
-        // Hapus gambar lama jika user centang "Hapus gambar saat ini"
         if ($request->boolean('remove_image') && $product->image) {
             Storage::disk('public')->delete($product->image);
             $validated['image'] = null;
         }
 
-        // Ganti gambar jika ada upload baru
         if ($request->hasFile('image')) {
             if ($product->image) {
                 Storage::disk('public')->delete($product->image);
@@ -114,19 +129,26 @@ class AdminProductController extends Controller
 
         unset($validated['remove_image']);
 
-        $product->update($validated);
+        DB::transaction(function () use ($product, $validated, $request) {
+            $product->update($validated);
+
+            if ($request->has('prices')) {
+                $product->prices()->delete(); // hapus harga lama
+                foreach ($request->prices as $price) {
+                    $product->prices()->create($price);
+                }
+            }
+        });
 
         return redirect('/admin/products')->with('success', 'Produk berhasil diperbarui');
     }
 
     public function destroy(Product $product)
     {
-        // Cek apakah produk sudah pernah dipakai di transaksi pembelian
         $hasPurchaseHistory = DB::table('purchase_items')
             ->where('product_id', $product->id)
             ->exists();
 
-        // Cek juga transaksi penjualan, kalau tabelnya sudah ada
         $hasSaleHistory = Schema::hasTable('sale_items')
             ? DB::table('sale_items')->where('product_id', $product->id)->exists()
             : false;
@@ -136,11 +158,11 @@ class AdminProductController extends Controller
                 ->with('error', "Produk \"{$product->name}\" tidak bisa dihapus karena sudah memiliki riwayat transaksi. Nonaktifkan produk ini sebagai gantinya.");
         }
 
-        // Aman dihapus karena belum pernah dipakai di transaksi apa pun
         if ($product->image) {
             Storage::disk('public')->delete($product->image);
         }
 
+        $product->prices()->delete();
         $product->delete();
 
         return redirect('/admin/products')->with('success', 'Produk berhasil dihapus');
@@ -149,11 +171,6 @@ class AdminProductController extends Controller
     public function toggleActive(Product $product)
     {
         $product->update(['is_active' => !$product->is_active]);
-
-        // Tidak ada flash message di sini secara sengaja —
-        // perubahan status sudah terlihat langsung dari warna badge
-        // (hijau = aktif, merah = nonaktif) di halaman daftar produk,
-        // jadi notifikasi tambahan di atas card tidak diperlukan.
         return redirect('/admin/products');
     }
 }
